@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Magnet Web Browser</title>
+    <script src="https://cdn.jsdelivr.net/npm/webtorrent@latest/webtorrent.min.js"></script>
+    <style>
+        body { font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #e0e0e0; }
+        /* Здесь будет отлично смотреться скевоморфизм, Aero-стиль или классический Material Design 1! */
+        #toolbar { padding: 10px; background: rgba(255, 255, 255, 0.5); backdrop-filter: blur(10px); border-bottom: 1px solid #ccc; display: flex; gap: 10px; }
+        #site-select { padding: 5px; flex-grow: 1; }
+        #load-btn { padding: 5px 15px; cursor: pointer; }
+        #status { font-size: 12px; color: #555; padding-top: 5px; }
+        #browser-frame { flex-grow: 1; border: none; width: 100%; background: #fff; }
+    </style>
+</head>
+<body>
+
+    <div id="toolbar">
+        <select id="site-select">
+            <option value="">Загрузка списка сайтов...</option>
+        </select>
+        <button id="load-btn">Перейти</button>
+        <div id="status">Готов</div>
+    </div>
+
+    <iframe id="browser-frame"></iframe>
+
+    <script type="module">
+        // Подключаем Supabase
+        import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm'
+
+        const SUPABASE_URL = 'https://fjlfnecsltobwwdtukiq.supabase.co'
+        const SUPABASE_KEY = 'sb_publishable_nrmtUJpMbA5pE46khRpwGA_4SzCYuDG'
+        const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
+
+        const client = new WebTorrent()
+        const siteSelect = document.getElementById('site-select')
+        const loadBtn = document.getElementById('load-btn')
+        const statusDiv = document.getElementById('status')
+        const browserFrame = document.getElementById('browser-frame')
+
+        // Обработка глобальных ошибок клиента
+        client.on('error', (err) => {
+            console.error('Ошибка WebTorrent:', err)
+            statusDiv.innerText = 'Ошибка: ' + err.message
+        })
+
+        // Получаем список сайтов из БД
+        async function loadSites() {
+            const { data, error } = await supabase
+                .from('p2p_sites')
+                .select('*')
+            
+            if (error) {
+                console.error('Ошибка загрузки из Supabase:', error)
+                statusDiv.innerText = 'Ошибка подключения к БД'
+                return
+            }
+
+            siteSelect.innerHTML = '<option value="">Выберите сайт...</option>'
+            data.forEach(site => {
+                const option = document.createElement('option')
+                option.value = site.magnet_uri
+                option.textContent = site.title
+                siteSelect.appendChild(option)
+            })
+        }
+
+        // Загрузка сайта по Magnet-ссылке
+        loadBtn.addEventListener('click', () => {
+            let magnetURI = siteSelect.value
+            if (!magnetURI) return
+
+            statusDiv.innerText = 'Поиск пиров...'
+
+            // 1. Защита от отсутствия WebRTC трекеров.
+            // Без wss:// браузер в принципе не сможет найти пиров.
+            const wssTrackers = [
+                'wss://tracker.btorrent.xyz',
+                'wss://tracker.openwebtorrent.com'
+            ]
+            wssTrackers.forEach(tracker => {
+                const encoded = encodeURIComponent(tracker)
+                if (!magnetURI.includes(encoded)) {
+                    magnetURI += `&tr=${encoded}`
+                }
+            })
+            
+            // 2. Оптимизация производительности: жестко удаляем старые торренты,
+            // чтобы освободить оперативную память перед загрузкой нового сайта.
+            client.torrents.forEach(t => t.destroy())
+
+            client.add(magnetURI, (torrent) => {
+                // Выводим прогресс, чтобы понимать, что процесс не завис
+                torrent.on('download', () => {
+                    const progress = (torrent.progress * 100).toFixed(1)
+                    statusDiv.innerText = `Пиров: ${torrent.numPeers} | Загрузка: ${progress}%`
+                })
+
+                torrent.on('done', () => {
+                    const file = torrent.files.find(f => f.name.endsWith('.html'))
+
+                    if (file) {
+                        file.getBlobURL((err, url) => {
+                            if (err) {
+                                statusDiv.innerText = 'Ошибка рендеринга страницы'
+                                return
+                            }
+                            browserFrame.src = url
+                            statusDiv.innerText = `Готово! (Пиров: ${torrent.numPeers})`
+                        })
+                    } else {
+                        statusDiv.innerText = 'Ошибка: .html файл не найден в раздаче'
+                    }
+                })
+            })
+        })
+
+        // Инициализация
+        loadSites()
+    </script>
+</body>
+</html>
