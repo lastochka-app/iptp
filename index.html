@@ -3,25 +3,64 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Magnet Web Browser</title>
+    <title>IPTP Browser</title>
     <script src="https://cdn.jsdelivr.net/npm/webtorrent@latest/webtorrent.min.js"></script>
     <style>
-        body { font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #e0e0e0; }
-        #toolbar { padding: 10px; background: rgba(255, 255, 255, 0.5); backdrop-filter: blur(10px); border-bottom: 1px solid #ccc; display: flex; gap: 10px; align-items: center; }
-        #site-select { padding: 5px; flex-grow: 1; height: 30px; }
-        #load-btn { padding: 5px 15px; cursor: pointer; height: 30px; }
-        #status { font-size: 12px; color: #333; font-weight: bold; min-width: 250px; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #ece9d8; }
+        
+        #toolbar { 
+            padding: 10px; 
+            background: linear-gradient(to bottom, #f0f0f0, #e0e0e0); 
+            border-bottom: 1px solid #a0a0a0; 
+            display: flex; 
+            gap: 8px; 
+            align-items: center; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        #address-bar { 
+            padding: 6px 10px; 
+            flex-grow: 1; 
+            font-size: 14px; 
+            border: 1px solid #b9b9b9; 
+            border-radius: 3px; 
+            outline: none;
+        }
+        #address-bar:focus { border-color: #0078d7; }
+        
+        #load-btn { 
+            padding: 6px 15px; 
+            cursor: pointer; 
+            font-size: 14px; 
+            border: 1px solid #adadad;
+            background: #e1e1e1;
+            border-radius: 3px;
+        }
+        #load-btn:hover { background: #e5f1fb; border-color: #0078d7; }
+        
+        #status { font-size: 12px; color: #555; min-width: 250px; font-weight: bold; }
+        
         #browser-frame { flex-grow: 1; border: none; width: 100%; background: #fff; }
+
+        /* Страница ошибки IPTP DNS */
+        .error-page {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            text-align: center;
+            font-family: sans-serif;
+            color: #333;
+        }
     </style>
 </head>
 <body>
 
     <div id="toolbar">
-        <select id="site-select">
-            <option value="">Синхронизация с Supabase...</option>
-        </select>
+        <input type="text" id="address-bar" placeholder="iptp://example.mag" value="iptp://">
         <button id="load-btn">Перейти</button>
-        <div id="status">Инициализация...</div>
+        <div id="status">Система IPTP готова</div>
     </div>
 
     <iframe id="browser-frame"></iframe>
@@ -34,124 +73,124 @@
         const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
         const client = new WebTorrent()
-        const siteSelect = document.getElementById('site-select')
+        const addressBar = document.getElementById('address-bar')
         const loadBtn = document.getElementById('load-btn')
         const statusDiv = document.getElementById('status')
         const browserFrame = document.getElementById('browser-frame')
 
-        let peerMonitorInterval = null
+        let peerMonitorInterval = null;
 
         client.on('error', (err) => {
-            console.error('Критическая ошибка WebTorrent:', err)
-            statusDiv.innerText = 'Ошибка сети: ' + err.message
+            console.error('Ошибка WebTorrent:', err)
+            statusDiv.innerText = 'Ошибка: ' + err.message
         })
 
-        // 1. Полноценная диагностика Supabase
-        async function loadSites() {
-            statusDiv.innerText = 'Подключение к базе данных...'
+        // Функция показа страницы ошибки прямо в iframe
+        function showErrorPage(domain, message) {
+            const errorHTML = `
+                <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:90vh; font-family:sans-serif; text-align:center;">
+                    <h1 style="font-size: 48px; color: #555; margin-bottom: 10px;">Сервер не найден</h1>
+                    <p style="font-size: 18px; color: #777;">IPTP не смог найти адрес <b>${domain}</b>.</p>
+                    <p style="color: #999; font-size: 14px;">${message}</p>
+                </div>
+            `;
+            const blob = new Blob([errorHTML], { type: 'text/html' });
+            browserFrame.src = URL.createObjectURL(blob);
+        }
+
+        async function resolveAndLoad() {
+            let rawAddress = addressBar.value.trim()
+            if (!rawAddress) return
+
+            // 1. Парсинг адреса (очистка от iptp:// и слэшей)
+            let domain = rawAddress.toLowerCase()
+            if (domain.startsWith('iptp://')) {
+                domain = domain.replace('iptp://', '')
+            }
+            if (domain.endsWith('/')) {
+                domain = domain.slice(0, -1)
+            }
+
+            if (!domain) return;
+
+            statusDiv.innerText = `Разрешение IPTP адреса: ${domain}...`
+            browserFrame.src = 'about:blank' // Очищаем экран на время загрузки
+
             try {
+                // 2. DNS-запрос к Supabase
                 const { data, error } = await supabase
                     .from('p2p_sites')
-                    .select('*')
-                
-                if (error) {
-                    console.error('Ошибка Supabase:', error)
-                    statusDiv.innerText = `Ошибка БД: ${error.message} (Проверь RLS!)`
+                    .select('magnet_uri')
+                    .eq('domain', domain)
+                    .single() // Запрашиваем строго одну запись
+
+                if (error || !data) {
+                    statusDiv.innerText = 'Ошибка: Домен не зарегистрирован'
+                    showErrorPage(domain, 'Проверьте правильность ввода адреса или убедитесь, что домен существует в реестре Supabase.');
                     return
                 }
 
-                if (!data || data.length === 0) {
-                    statusDiv.innerText = 'Сеть пуста. Добавьте Magnet-ссылки в таблицу p2p_sites.'
-                    siteSelect.innerHTML = '<option value="">(Таблица p2p_sites пуста)</option>'
-                    return
-                }
+                // 3. Загрузка торрента
+                let magnetURI = data.magnet_uri
+                statusDiv.innerText = 'Связь с пирами...'
 
-                siteSelect.innerHTML = '<option value="">Выберите децентрализованный сайт...</option>'
-                data.forEach(site => {
-                    const option = document.createElement('option')
-                    option.value = site.magnet_uri
-                    option.textContent = site.title
-                    siteSelect.appendChild(option)
+                // Добавляем WebSocket трекеры
+                const wssTrackers = [
+                    'wss://tracker.btorrent.xyz',
+                    'wss://tracker.openwebtorrent.com'
+                ]
+                wssTrackers.forEach(tracker => {
+                    const encoded = encodeURIComponent(tracker)
+                    if (!magnetURI.includes(encoded)) {
+                        magnetURI += `&tr=${encoded}`
+                    }
                 })
-                statusDiv.innerText = 'Браузер готов. Выберите сайт.'
+
+                // Чистим старые загрузки
+                client.torrents.forEach(t => t.destroy())
+                if (peerMonitorInterval) clearInterval(peerMonitorInterval)
+
+                client.add(magnetURI, (torrent) => {
+                    
+                    peerMonitorInterval = setInterval(() => {
+                        const progress = (torrent.progress * 100).toFixed(1)
+                        statusDiv.innerText = `Пиров: ${torrent.numPeers} | Загрузка: ${progress}%`
+                    }, 1000)
+
+                    torrent.on('done', () => {
+                        clearInterval(peerMonitorInterval)
+                        const file = torrent.files.find(f => f.name.endsWith('.html'))
+
+                        if (file) {
+                            file.getBlobURL((err, url) => {
+                                if (err) {
+                                    statusDiv.innerText = 'Ошибка рендеринга страницы'
+                                    return
+                                }
+                                browserFrame.src = url
+                                statusDiv.innerText = `Готово! (Пиров: ${torrent.numPeers})`
+                            })
+                        } else {
+                            statusDiv.innerText = 'Ошибка: .html файл не найден'
+                            showErrorPage(domain, 'Сайт загружен, но в корневом каталоге отсутствует файл .html');
+                        }
+                    })
+                })
+
             } catch (err) {
-                statusDiv.innerText = 'Критический сбой подключения: ' + err.message
+                statusDiv.innerText = 'Сбой IPTP DNS: ' + err.message
             }
         }
 
-        // 2. Стабильный запуск P2P загрузки
-        loadBtn.addEventListener('click', () => {
-            const magnetURI = siteSelect.value
-            if (!magnetURI) return
+        // Обработка клика по кнопке
+        loadBtn.addEventListener('click', resolveAndLoad)
 
-            // Сброс предыдущего монитора пиров
-            if (peerMonitorInterval) clearInterval(peerMonitorInterval)
-            statusDiv.innerText = 'Подготовка окружения...'
-
-            // Чистим память от старых торрентов
-            client.torrents.forEach(t => {
-                try { client.remove(t.infoHash) } catch(e) {}
-            })
-
-            try {
-                // Передаем WebRTC трекеры через нативный объект опций (без перезаписи строки)
-                const torrent = client.add(magnetURI, {
-                    announce: [
-                        'wss://tracker.btorrent.xyz',
-                        'wss://tracker.openwebtorrent.com',
-                        'wss://tracker.files.fm:7073/announce',
-                        'wss://tracker.fastcast.nz'
-                    ]
-                })
-
-                statusDiv.innerText = 'Вход в P2P сеть, поиск пиров...'
-
-                // Мониторинг пиров в реальном времени (работает НАМНОГО раньше скачивания метаданных)
-                peerMonitorInterval = setInterval(() => {
-                    if (!torrent.metadata) {
-                        statusDiv.innerText = `Поиск пиров для метаданных... (Активных пиров: ${torrent.numPeers})`
-                    } else {
-                        const progress = (torrent.progress * 100).toFixed(1)
-                        const speed = (torrent.downloadSpeed / 1024).toFixed(1)
-                        statusDiv.innerText = `Загрузка контента: ${progress}% | Пиров: ${torrent.numPeers} | ${speed} KB/s`
-                    }
-                }, 800)
-
-                torrent.on('metadata', () => {
-                    console.log('Метаданные получены, структура файлов ясна.')
-                })
-
-                torrent.on('done', () => {
-                    clearInterval(peerMonitorInterval)
-                    // Ищем любой файл, заканчивающийся на .html
-                    const file = torrent.files.find(f => f.name.endsWith('.html'))
-
-                    if (file) {
-                        file.getBlobURL((err, url) => {
-                            if (err) {
-                                statusDiv.innerText = 'Ошибка компиляции Blob URL'
-                                return
-                            }
-                            browserFrame.src = url
-                            statusDiv.innerText = `Сайт успешно запущен! (Использовано пиров: ${torrent.numPeers})`
-                        })
-                    } else {
-                        statusDiv.innerText = 'Ошибка: В торренте отсутствует стартовый .html файл'
-                    }
-                })
-
-                torrent.on('error', (err) => {
-                    clearInterval(peerMonitorInterval)
-                    statusDiv.innerText = `Ошибка торрента: ${err.message}`
-                })
-
-            } catch (err) {
-                statusDiv.innerText = 'Ошибка инициализации торрента: ' + err.message
+        // Обработка нажатия Enter в адресной строке
+        addressBar.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                resolveAndLoad()
             }
         })
-
-        // Старт
-        loadSites()
     </script>
 </body>
 </html>
