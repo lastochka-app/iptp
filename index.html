@@ -3,50 +3,67 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Inblelt IPTP Browser & Player</title>
+    <title>IPTP Browser</title>
     <script src="https://cdn.jsdelivr.net/npm/webtorrent@latest/webtorrent.min.js"></script>
     <style>
-        body { font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #e0e0e0; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #ece9d8; }
         
         #toolbar { 
             padding: 10px; 
-            background: rgba(255, 255, 255, 0.5); 
-            backdrop-filter: blur(10px); 
-            border-bottom: 1px solid #ccc; 
+            background: linear-gradient(to bottom, #f0f0f0, #e0e0e0); 
+            border-bottom: 1px solid #a0a0a0; 
             display: flex; 
-            gap: 10px; 
-            align-items: center;
+            gap: 8px; 
+            align-items: center; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         
-        #site-select { padding: 5px; flex-grow: 1; }
-        #load-btn { padding: 5px 15px; cursor: pointer; }
-        #status { font-size: 12px; color: #555; font-weight: bold; min-width: 250px; }
+        #address-bar { 
+            padding: 6px 10px; 
+            flex-grow: 1; 
+            font-size: 14px; 
+            border: 1px solid #b9b9b9; 
+            border-radius: 3px; 
+            outline: none;
+        }
+        #address-bar:focus { border-color: #0078d7; }
+        
+        #load-btn { 
+            padding: 6px 15px; 
+            cursor: pointer; 
+            font-size: 14px; 
+            border: 1px solid #adadad;
+            background: #e1e1e1;
+            border-radius: 3px;
+        }
+        #load-btn:hover { background: #e5f1fb; border-color: #0078d7; }
+        
+        #status { font-size: 12px; color: #555; min-width: 250px; font-weight: bold; }
         
         #browser-frame { flex-grow: 1; border: none; width: 100%; background: #fff; }
-        
-        /* Экран Inblelt IPTP Player */
-        #inblelt-player {
-            display: none; /* Скрыт по умолчанию */
-            flex-grow: 1;
-            width: 100%;
-            background: #000; /* Черный фон для мультимедиа */
-            outline: none;
+
+        /* Страница ошибки IPTP DNS */
+        .error-page {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            text-align: center;
+            font-family: sans-serif;
+            color: #333;
         }
     </style>
 </head>
 <body>
 
     <div id="toolbar">
-        <select id="site-select">
-            <option value="">Загрузка списка из Supabase...</option>
-        </select>
-        <button id="load-btn">Запустить</button>
-        <div id="status">Готов</div>
+        <input type="text" id="address-bar" placeholder="iptp://example.mag" value="iptp://">
+        <button id="load-btn">Перейти</button>
+        <div id="status">Система IPTP готова</div>
     </div>
 
     <iframe id="browser-frame"></iframe>
-    
-    <video id="inblelt-player" controls autoplay></video>
 
     <script type="module">
         import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm'
@@ -56,114 +73,124 @@
         const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
         const client = new WebTorrent()
-        const siteSelect = document.getElementById('site-select')
+        const addressBar = document.getElementById('address-bar')
         const loadBtn = document.getElementById('load-btn')
         const statusDiv = document.getElementById('status')
         const browserFrame = document.getElementById('browser-frame')
-        const videoElement = document.getElementById('inblelt-player')
+
+        let peerMonitorInterval = null;
 
         client.on('error', (err) => {
             console.error('Ошибка WebTorrent:', err)
             statusDiv.innerText = 'Ошибка: ' + err.message
         })
 
-        // Класс управления потоковым плеером
-        class InbleltIPTPPlayer {
-            static playStream(file) {
-                // Скрываем сайт, показываем плеер
-                browserFrame.style.display = 'none'
-                videoElement.style.display = 'block'
-                
-                // Рендерим поток байтов напрямую в видео-тег
-                file.renderTo(videoElement, { autoplay: true })
-            }
-
-            static showBrowser() {
-                // Скрываем и останавливаем плеер, возвращаем браузер
-                videoElement.style.display = 'none'
-                videoElement.pause()
-                videoElement.removeAttribute('src')
-                videoElement.load()
-                browserFrame.style.display = 'block'
-            }
+        // Функция показа страницы ошибки прямо в iframe
+        function showErrorPage(domain, message) {
+            const errorHTML = `
+                <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:90vh; font-family:sans-serif; text-align:center;">
+                    <h1 style="font-size: 48px; color: #555; margin-bottom: 10px;">Сервер не найден</h1>
+                    <p style="font-size: 18px; color: #777;">IPTP не смог найти адрес <b>${domain}</b>.</p>
+                    <p style="color: #999; font-size: 14px;">${message}</p>
+                </div>
+            `;
+            const blob = new Blob([errorHTML], { type: 'text/html' });
+            browserFrame.src = URL.createObjectURL(blob);
         }
 
-        async function loadSites() {
-            const { data, error } = await supabase
-                .from('p2p_sites')
-                .select('*')
-            
-            if (error) {
-                statusDiv.innerText = 'Ошибка подключения к БД'
-                return
+        async function resolveAndLoad() {
+            let rawAddress = addressBar.value.trim()
+            if (!rawAddress) return
+
+            // 1. Парсинг адреса (очистка от iptp:// и слэшей)
+            let domain = rawAddress.toLowerCase()
+            if (domain.startsWith('iptp://')) {
+                domain = domain.replace('iptp://', '')
+            }
+            if (domain.endsWith('/')) {
+                domain = domain.slice(0, -1)
             }
 
-            siteSelect.innerHTML = '<option value="">Выберите контент...</option>'
-            data.forEach(site => {
-                const option = document.createElement('option')
-                option.value = site.magnet_uri
-                option.textContent = site.title
-                siteSelect.appendChild(option)
-            })
-        }
+            if (!domain) return;
 
-        loadBtn.addEventListener('click', () => {
-            let magnetURI = siteSelect.value
-            if (!magnetURI) return
+            statusDiv.innerText = `Разрешение IPTP адреса: ${domain}...`
+            browserFrame.src = 'about:blank' // Очищаем экран на время загрузки
 
-            statusDiv.innerText = 'Поиск пиров...'
-            browserFrame.src = 'about:blank'
+            try {
+                // 2. DNS-запрос к Supabase
+                const { data, error } = await supabase
+                    .from('p2p_sites')
+                    .select('magnet_uri')
+                    .eq('domain', domain)
+                    .single() // Запрашиваем строго одну запись
 
-            const wssTrackers = [
-                'wss://tracker.btorrent.xyz',
-                'wss://tracker.openwebtorrent.com'
-            ]
-            wssTrackers.forEach(tracker => {
-                const encoded = encodeURIComponent(tracker)
-                if (!magnetURI.includes(encoded)) {
-                    magnetURI += `&tr=${encoded}`
+                if (error || !data) {
+                    statusDiv.innerText = 'Ошибка: Домен не зарегистрирован'
+                    showErrorPage(domain, 'Проверьте правильность ввода адреса или убедитесь, что домен существует в реестре Supabase.');
+                    return
                 }
-            })
-            
-            client.torrents.forEach(t => t.destroy())
 
-            client.add(magnetURI, (torrent) => {
-                torrent.on('download', () => {
-                    const progress = (torrent.progress * 100).toFixed(1)
-                    const speed = (torrent.downloadSpeed / 1024 / 1024).toFixed(2)
-                    statusDiv.innerText = `Пиров: ${torrent.numPeers} | ${progress}% | ${speed} MB/s`
+                // 3. Загрузка торрента
+                let magnetURI = data.magnet_uri
+                statusDiv.innerText = 'Связь с пирами...'
+
+                // Добавляем WebSocket трекеры
+                const wssTrackers = [
+                    'wss://tracker.btorrent.xyz',
+                    'wss://tracker.openwebtorrent.com'
+                ]
+                wssTrackers.forEach(tracker => {
+                    const encoded = encodeURIComponent(tracker)
+                    if (!magnetURI.includes(encoded)) {
+                        magnetURI += `&tr=${encoded}`
+                    }
                 })
 
-                // Событие 'infoHash' или базовый коллбэк client.add срабатывает, 
-                // когда получены метаданные (до скачивания самих файлов)
-                const mediaFile = torrent.files.find(f => f.name.match(/\.(mp4|webm|mkv|mp3)$/i))
-                const htmlFile = torrent.files.find(f => f.name.endsWith('.html'))
+                // Чистим старые загрузки
+                client.torrents.forEach(t => t.destroy())
+                if (peerMonitorInterval) clearInterval(peerMonitorInterval)
 
-                if (mediaFile) {
-                    // Мультимедиа найдено: стартуем Inblelt Player мгновенно
-                    statusDiv.innerText = `IPTP Player: Буферизация ${mediaFile.name}...`
-                    InbleltIPTPPlayer.playStream(mediaFile)
-                } else if (htmlFile) {
-                    // Сайт найден: переключаемся на браузер
-                    InbleltIPTPPlayer.showBrowser()
+                client.add(magnetURI, (torrent) => {
                     
-                    torrent.on('done', () => {
-                        htmlFile.getBlobURL((err, url) => {
-                            if (err) {
-                                statusDiv.innerText = 'Ошибка рендеринга страницы'
-                                return
-                            }
-                            browserFrame.src = url
-                            statusDiv.innerText = `Готово! (Пиров: ${torrent.numPeers})`
-                        })
-                    })
-                } else {
-                    statusDiv.innerText = 'Ошибка: Поддерживаемый контент не найден в раздаче'
-                }
-            })
-        })
+                    peerMonitorInterval = setInterval(() => {
+                        const progress = (torrent.progress * 100).toFixed(1)
+                        statusDiv.innerText = `Пиров: ${torrent.numPeers} | Загрузка: ${progress}%`
+                    }, 1000)
 
-        loadSites()
+                    torrent.on('done', () => {
+                        clearInterval(peerMonitorInterval)
+                        const file = torrent.files.find(f => f.name.endsWith('.html'))
+
+                        if (file) {
+                            file.getBlobURL((err, url) => {
+                                if (err) {
+                                    statusDiv.innerText = 'Ошибка рендеринга страницы'
+                                    return
+                                }
+                                browserFrame.src = url
+                                statusDiv.innerText = `Готово! (Пиров: ${torrent.numPeers})`
+                            })
+                        } else {
+                            statusDiv.innerText = 'Ошибка: .html файл не найден'
+                            showErrorPage(domain, 'Сайт загружен, но в корневом каталоге отсутствует файл .html');
+                        }
+                    })
+                })
+
+            } catch (err) {
+                statusDiv.innerText = 'Сбой IPTP DNS: ' + err.message
+            }
+        }
+
+        // Обработка клика по кнопке
+        loadBtn.addEventListener('click', resolveAndLoad)
+
+        // Обработка нажатия Enter в адресной строке
+        addressBar.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                resolveAndLoad()
+            }
+        })
     </script>
 </body>
 </html>
